@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Airplane Model Viewer</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: #1a1a1a;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            color: #fff;
+            margin-bottom: 20px;
+        }
+        canvas {
+            border: 1px solid #333;
+            background-color: #000;
+            display: block;
+            margin: 0 auto;
+        }
+        .controls {
+            margin-top: 20px;
+            text-align: center;
+        }
+        button {
+            margin: 5px;
+            padding: 10px 15px;
+            background-color: #333;
+            color: white;
+            border: 1px solid #555;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+        button:hover {
+            background-color: #555;
+        }
+        button:disabled {
+            background-color: #222;
+            cursor: not-allowed;
+        }
+        .info {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #2a2a2a;
+            border-radius: 5px;
+            border-left: 4px solid #007bff;
+        }
+        .loading {
+            text-align: center;
+            color: #ffa500;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Boeing 747 Model Viewer</h1>
+        <canvas id="canvas" width="800" height="600"></canvas>
+        
+        <div class="controls">
+            <button id="loadModel">Load Boeing 747 Model</button>
+            <button id="toggleRotation" disabled>Toggle Rotation</button>
+            <button id="resetView">Reset View</button>
+        </div>
+        
+        <div class="info">
+            <h3>Boeing 747 3D Model</h3>
+            <p>This viewer displays a detailed Boeing 747 aircraft model with multiple parts. Click "Load Boeing 747 Model" to begin.</p>
+            <div id="modelInfo"></div>
+            <div id="loadingStatus" class="loading" style="display: none;">Loading model...</div>
+        </div>
+    </div>
+
+    <!-- Load required JavaScript libraries -->
+    <script src="MV.js"></script>
+    <script src="week5/OBJParser.js"></script>
+    <script src="project.js"></script>
+</body>
+</html>
