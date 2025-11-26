@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU Triangle Mesh Renderer - Part 4</title>
+    <style>
+        canvas {
+            width: 800px;
+            height: 600px;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebGPU Triangle Mesh Renderer - Part 4</h1>
+    <canvas id="canvas" width="800" height="600"></canvas>
+        <div class="controls">
+            <button id="loadModel">Load Monkey Model (Standard)</button>
+            <button id="loadWireframe">Load Monkey Model (Wireframe)</button>
+            <button id="toggleRotation">Stop Rotation</button>
+        </div>
+    
+    <div class="controls">
+        <h3>Lighting Parameters</h3>
+        <div class="slider-container">
+            <label for="kd-slider">Diffuse (kd):</label>
+            <input type="range" id="kd-slider" min="0" max="1" step="0.01" value="0.8">
+            <div class="slider-value" id="kd-value">0.80</div>
+        </div>
+        <div class="slider-container">
+            <label for="ks-slider">Specular (ks):</label>
+            <input type="range" id="ks-slider" min="0" max="1" step="0.01" value="0.5">
+            <div class="slider-value" id="ks-value">0.50</div>
+        </div>
+        <div class="slider-container">
+            <label for="shininess-slider">Shininess:</label>
+            <input type="range" id="shininess-slider" min="1" max="128" step="1" value="32">
+            <div class="slider-value" id="shininess-value">32</div>
+        </div>
+        <div class="slider-container">
+            <label for="le-slider">Light Emission:</label>
+            <input type="range" id="le-slider" min="0" max="2" step="0.01" value="1.0">
+            <div class="slider-value" id="le-value">1.00</div>
+        </div>
+        <div class="slider-container">
+            <label for="la-slider">Ambient Light:</label>
+            <input type="range" id="la-slider" min="0" max="1" step="0.01" value="0.1">
+            <div class="slider-value" id="la-value">0.10</div>
+        </div>
+    </div>
+    
+    <div id="info">
+        <p>Part 4: Phong lighting and shading. Click "Load Monkey Model" to load and render the 3D model with Phong illumination.</p>
+    </div>
+
+    <script src="../../MV.js"></script>
+    <script src="../OBJParser.js"></script>
+    <script>
+        // Save standard parser function
+        window.readOBJFileStandard = window.readOBJFile;
+    </script>
+    <script src="../OBJParser_wire.js"></script>
+    <script>
+        // Save wireframe parser function
+        window.readOBJFileWireframe = window.readOBJFile;
+    </script>
+    <script src="script.js"></script>
+</body>
+</html>
