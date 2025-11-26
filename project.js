@@ -1,8 +1,9 @@
 // Boeing 747 Model Viewer
-// WebGL application to load and display a 3D Boeing 747 model
+// WebGPU application to load and display a 3D Boeing 747 model
 
-let gl;
-let program;
+let device;
+let context;
+let pipeline;
 let canvas;
 
 // Model data
@@ -10,11 +11,7 @@ let modelData = null;
 let vertices = [];
 let indices = [];
 let normals = [];
-
-// Buffers
-let vertexBuffer;
-let indexBuffer;
-let normalBuffer;
+let parts = {}; // Store each part separately
 
 // Matrices and transformations
 let modelMatrix;
@@ -26,136 +23,220 @@ let mvpMatrix;
 let rotation = 0;
 let isRotating = false;
 
+// Control surface angles (in degrees)
+let leftAileronAngle = 0;
+
 // Camera
 let cameraDistance = 10.0;
 let cameraAngleX = 0;
 let cameraAngleY = 0;
 
-// Shader sources
-const vertexShaderSource = `
-    attribute vec4 a_position;
-    attribute vec3 a_normal;
+// WebGPU resources
+let depthTexture;
+let uniformBuffer;
+let uniformBindGroup;
+let hingeMarkerBuffer;
+let hingeMarkerBindGroup;
+
+// Shader sources (WGSL)
+const shaderSource = `
+struct Uniforms {
+    mvpMatrix: mat4x4<f32>,
+    modelMatrix: mat4x4<f32>,
+    normalMatrix0: vec3<f32>,
+    _pad0: f32,
+    normalMatrix1: vec3<f32>,
+    _pad1: f32,
+    normalMatrix2: vec3<f32>,
+    _pad2: f32,
+    lightPosition: vec3<f32>,
+    _pad3: f32,
+    viewPosition: vec3<f32>,
+    _pad4: f32,
+    lightColor: vec3<f32>,
+    _pad5: f32,
+    ambient: vec3<f32>,
+    _pad6: f32,
+    diffuse: vec3<f32>,
+    _pad7: f32,
+    specular: vec3<f32>,
+    shininess: f32,
+};
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) worldPosition: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+};
+
+@vertex
+fn vertexMain(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    let pos4 = vec4<f32>(input.position, 1.0);
+    output.position = uniforms.mvpMatrix * pos4;
+    output.worldPosition = (uniforms.modelMatrix * pos4).xyz;
     
-    uniform mat4 u_mvpMatrix;
-    uniform mat4 u_modelMatrix;
-    uniform mat3 u_normalMatrix;
+    // Reconstruct normal matrix from padded rows
+    let normalMatrix = mat3x3<f32>(
+        uniforms.normalMatrix0,
+        uniforms.normalMatrix1,
+        uniforms.normalMatrix2
+    );
+    output.normal = normalMatrix * input.normal;
+    return output;
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+    let normal = normalize(input.normal);
+    let lightDir = normalize(uniforms.lightPosition - input.worldPosition);
+    let viewDir = normalize(uniforms.viewPosition - input.worldPosition);
+    let reflectDir = reflect(-lightDir, normal);
     
-    varying vec3 v_normal;
-    varying vec3 v_position;
+    // Ambient
+    let ambient = uniforms.ambient * uniforms.lightColor;
     
-    void main() {
-        gl_Position = u_mvpMatrix * a_position;
-        v_normal = u_normalMatrix * a_normal;
-        v_position = (u_modelMatrix * a_position).xyz;
-    }
+    // Diffuse
+    let diff = max(dot(normal, lightDir), 0.0);
+    let diffuse = diff * uniforms.diffuse * uniforms.lightColor;
+    
+    // Specular
+    let spec = pow(max(dot(viewDir, reflectDir), 0.0), uniforms.shininess);
+    let specular = spec * uniforms.specular * uniforms.lightColor;
+    
+    let result = ambient + diffuse + specular;
+    return vec4<f32>(result, 1.0);
+}
+
+// Hinge marker shader
+@vertex
+fn hingeVertexMain(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    output.position = uniforms.mvpMatrix * vec4<f32>(input.position, 1.0);
+    output.worldPosition = input.position;
+    output.normal = vec3<f32>(0.0, 1.0, 0.0);
+    return output;
+}
+
+@fragment
+fn hingeFragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0); // Red color
+}
 `;
 
-const fragmentShaderSource = `
-    precision mediump float;
-    
-    varying vec3 v_normal;
-    varying vec3 v_position;
-    
-    uniform vec3 u_lightPosition;
-    uniform vec3 u_lightColor;
-    uniform vec3 u_ambient;
-    uniform vec3 u_diffuse;
-    uniform vec3 u_specular;
-    uniform float u_shininess;
-    uniform vec3 u_viewPosition;
-    
-    void main() {
-        vec3 normal = normalize(v_normal);
-        vec3 lightDirection = normalize(u_lightPosition - v_position);
-        vec3 viewDirection = normalize(u_viewPosition - v_position);
-        vec3 reflectDirection = reflect(-lightDirection, normal);
-        
-        // Ambient
-        vec3 ambient = u_ambient * u_lightColor;
-        
-        // Diffuse
-        float diff = max(dot(normal, lightDirection), 0.0);
-        vec3 diffuse = diff * u_diffuse * u_lightColor;
-        
-        // Specular
-        float spec = pow(max(dot(viewDirection, reflectDirection), 0.0), u_shininess);
-        vec3 specular = spec * u_specular * u_lightColor;
-        
-        vec3 result = ambient + diffuse + specular;
-        gl_FragColor = vec4(result, 1.0);
-    }
-`;
-
-function initWebGL() {
+async function initWebGPU() {
     canvas = document.getElementById('canvas');
-    gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
     
-    if (!gl) {
-        alert('WebGL not supported');
+    if (!navigator.gpu) {
+        alert('WebGPU not supported in this browser');
         return false;
     }
     
-    // Set viewport
-    gl.viewport(0, 0, canvas.width, canvas.height);
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+        alert('Failed to get GPU adapter');
+        return false;
+    }
     
-    // Enable depth testing
-    gl.enable(gl.DEPTH_TEST);
-    gl.enable(gl.CULL_FACE);
+    device = await adapter.requestDevice();
     
-    // Set clear color
-    gl.clearColor(0.1, 0.1, 0.2, 1.0);
+    context = canvas.getContext('webgpu');
+    const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+    
+    context.configure({
+        device: device,
+        format: canvasFormat,
+        alphaMode: 'opaque',
+    });
+    
+    // Create depth texture
+    depthTexture = device.createTexture({
+        size: [canvas.width, canvas.height],
+        format: 'depth24plus',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
     
     return true;
 }
 
-function createShader(type, source) {
-    const shader = gl.createShader(type);
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
+async function initPipeline() {
+    const shaderModule = device.createShaderModule({
+        code: shaderSource,
+    });
     
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        console.error('Error compiling shader:', gl.getShaderInfoLog(shader));
-        gl.deleteShader(shader);
-        return null;
-    }
+    // Create uniform buffer (larger to accommodate all uniforms)
+    // mat4x4 (64) + mat4x4 (64) + mat3x3 as 3xvec4 (48) + 7 vec4s (112) = 288, round to 320
+    const uniformBufferSize = 320;
+    uniformBuffer = device.createBuffer({
+        size: uniformBufferSize,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     
-    return shader;
-}
-
-function initShaders() {
-    const vertexShader = createShader(gl.VERTEX_SHADER, vertexShaderSource);
-    const fragmentShader = createShader(gl.FRAGMENT_SHADER, fragmentShaderSource);
+    const bindGroupLayout = device.createBindGroupLayout({
+        entries: [{
+            binding: 0,
+            visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+            buffer: { type: 'uniform' }
+        }]
+    });
     
-    if (!vertexShader || !fragmentShader) {
-        return false;
-    }
+    uniformBindGroup = device.createBindGroup({
+        layout: bindGroupLayout,
+        entries: [{
+            binding: 0,
+            resource: { buffer: uniformBuffer }
+        }]
+    });
     
-    program = gl.createProgram();
-    gl.attachShader(program, vertexShader);
-    gl.attachShader(program, fragmentShader);
-    gl.linkProgram(program);
+    const pipelineLayout = device.createPipelineLayout({
+        bindGroupLayouts: [bindGroupLayout]
+    });
     
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        console.error('Error linking program:', gl.getProgramInfoLog(program));
-        return false;
-    }
-    
-    gl.useProgram(program);
-    
-    // Get attribute and uniform locations
-    program.positionLocation = gl.getAttribLocation(program, 'a_position');
-    program.normalLocation = gl.getAttribLocation(program, 'a_normal');
-    
-    program.mvpMatrixLocation = gl.getUniformLocation(program, 'u_mvpMatrix');
-    program.modelMatrixLocation = gl.getUniformLocation(program, 'u_modelMatrix');
-    program.normalMatrixLocation = gl.getUniformLocation(program, 'u_normalMatrix');
-    program.lightPositionLocation = gl.getUniformLocation(program, 'u_lightPosition');
-    program.lightColorLocation = gl.getUniformLocation(program, 'u_lightColor');
-    program.ambientLocation = gl.getUniformLocation(program, 'u_ambient');
-    program.diffuseLocation = gl.getUniformLocation(program, 'u_diffuse');
-    program.specularLocation = gl.getUniformLocation(program, 'u_specular');
-    program.shininessLocation = gl.getUniformLocation(program, 'u_shininess');
-    program.viewPositionLocation = gl.getUniformLocation(program, 'u_viewPosition');
+    pipeline = device.createRenderPipeline({
+        layout: pipelineLayout,
+        vertex: {
+            module: shaderModule,
+            entryPoint: 'vertexMain',
+            buffers: [{
+                arrayStride: 12, // 3 floats * 4 bytes
+                attributes: [{
+                    shaderLocation: 0,
+                    offset: 0,
+                    format: 'float32x3'
+                }]
+            }, {
+                arrayStride: 12, // 3 floats * 4 bytes
+                attributes: [{
+                    shaderLocation: 1,
+                    offset: 0,
+                    format: 'float32x3'
+                }]
+            }]
+        },
+        fragment: {
+            module: shaderModule,
+            entryPoint: 'fragmentMain',
+            targets: [{
+                format: navigator.gpu.getPreferredCanvasFormat()
+            }]
+        },
+        primitive: {
+            topology: 'triangle-list',
+            cullMode: 'back',
+        },
+        depthStencil: {
+            depthWriteEnabled: true,
+            depthCompare: 'less',
+            format: 'depth24plus',
+        }
+    });
     
     return true;
 }
@@ -166,21 +247,33 @@ function setupBuffers() {
         return false;
     }
     
-    // Create and bind vertex buffer
-    vertexBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+    // Create buffers for each part
+    for (let partName in parts) {
+        const part = parts[partName];
+        
+        // Create vertex buffer
+        part.vertexBuffer = device.createBuffer({
+            size: part.vertices.length * 4,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(part.vertexBuffer, 0, new Float32Array(part.vertices));
+        
+        // Create normal buffer
+        part.normalBuffer = device.createBuffer({
+            size: part.normals.length * 4,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(part.normalBuffer, 0, new Float32Array(part.normals));
+        
+        // Create index buffer
+        part.indexBuffer = device.createBuffer({
+            size: part.indices.length * 2, // Uint16
+            usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(part.indexBuffer, 0, new Uint16Array(part.indices));
+    }
     
-    // Create and bind normal buffer
-    normalBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.STATIC_DRAW);
-    
-    // Create and bind index buffer
-    indexBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
-    
+    console.log('Buffers created for all parts');
     return true;
 }
 
@@ -208,49 +301,189 @@ function setupMatrices() {
 }
 
 function render() {
-    if (!modelData || vertices.length === 0) {
+    if (!modelData || vertices.length === 0 || !device || !pipeline) {
         return;
     }
     
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    // Check if parts exist
+    if (Object.keys(parts).length === 0) {
+        console.warn('No parts available to render');
+        return;
+    }
     
     setupMatrices();
-    
-    // Set uniforms
-    gl.uniformMatrix4fv(program.mvpMatrixLocation, false, flatten(mvpMatrix));
-    gl.uniformMatrix4fv(program.modelMatrixLocation, false, flatten(modelMatrix));
-    
-    // Calculate normal matrix (transpose of inverse of model matrix)
-    const normalMatrix = normalMatrixFromMat4(modelMatrix);
-    gl.uniformMatrix3fv(program.normalMatrixLocation, false, flatten(normalMatrix));
-    
-    // Set lighting uniforms
-    gl.uniform3fv(program.lightPositionLocation, [10, 10, 10]);
-    gl.uniform3fv(program.lightColorLocation, [1, 1, 1]);
-    gl.uniform3fv(program.ambientLocation, [0.2, 0.2, 0.3]);
-    gl.uniform3fv(program.diffuseLocation, [0.8, 0.8, 0.9]);
-    gl.uniform3fv(program.specularLocation, [1, 1, 1]);
-    gl.uniform1f(program.shininessLocation, 32.0);
     
     const eye = vec3(
         cameraDistance * Math.sin(cameraAngleY) * Math.cos(cameraAngleX),
         cameraDistance * Math.sin(cameraAngleX),
         cameraDistance * Math.cos(cameraAngleY) * Math.cos(cameraAngleX)
     );
-    gl.uniform3fv(program.viewPositionLocation, eye);
     
-    // Bind and set up vertex attributes
-    gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
-    gl.enableVertexAttribArray(program.positionLocation);
-    gl.vertexAttribPointer(program.positionLocation, 3, gl.FLOAT, false, 0, 0);
+    const commandEncoder = device.createCommandEncoder();
     
-    gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
-    gl.enableVertexAttribArray(program.normalLocation);
-    gl.vertexAttribPointer(program.normalLocation, 3, gl.FLOAT, false, 0, 0);
+    const textureView = context.getCurrentTexture().createView();
     
-    // Draw
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
-    gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+    const renderPassDescriptor = {
+        colorAttachments: [{
+            view: textureView,
+            clearValue: { r: 0.1, g: 0.1, b: 0.2, a: 1.0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+        }],
+        depthStencilAttachment: {
+            view: depthTexture.createView(),
+            depthClearValue: 1.0,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'store',
+        }
+    };
+    
+    const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+    passEncoder.setPipeline(pipeline);
+    
+    // Draw each part with its own transformation
+    let partsDrawn = 0;
+    for (let partName in parts) {
+        const part = parts[partName];
+        partsDrawn++;
+        
+        // Calculate part-specific transformation
+        let partModelMatrix = modelMatrix;
+        
+        // Apply aileron rotation for left_aileron
+        if (partName.includes('left_aileron') || partName.includes('left aileron')) {
+            const bounds = part.bounds;
+            const xLen = bounds.maxX - bounds.minX;
+            const yLen = bounds.maxY - bounds.minY;
+            const zLen = bounds.maxZ - bounds.minZ;
+            
+            let hingeX, hingeY, hingeZ, rotationAxis;
+            
+            if (!render.loggedAileronHinge) {
+                console.log(`Aileron dimensions: X=${xLen.toFixed(2)}, Y=${yLen.toFixed(2)}, Z=${zLen.toFixed(2)}`);
+            }
+            
+            hingeX = bounds.minX;
+            hingeY = bounds.minY;
+            hingeZ = (bounds.minZ + bounds.maxZ) / 2;
+            rotationAxis = 'Z';
+
+            if (!render.loggedAileronHinge) {
+                console.log(`Aileron hinge: axis=${rotationAxis}, point=(${hingeX.toFixed(2)}, ${hingeY.toFixed(2)}, ${hingeZ.toFixed(2)})`);
+                render.loggedAileronHinge = true;
+            }
+            
+            if (!render.hingePoint) {
+                render.hingePoint = { x: hingeX, y: hingeY, z: hingeZ };
+            }
+            
+            partModelMatrix = mult(partModelMatrix, translate(hingeX, hingeY, hingeZ));
+            partModelMatrix = mult(partModelMatrix, rotateX(leftAileronAngle));
+            partModelMatrix = mult(partModelMatrix, translate(-hingeX, -hingeY, -hingeZ));
+        }
+        
+        // Calculate MVP for this part
+        const partMvp = mult(projectionMatrix, mult(viewMatrix, partModelMatrix));
+        const normalMatrix = normalMatrixFromMat4(partModelMatrix);
+        
+        // Update uniforms
+        updateUniforms(partMvp, partModelMatrix, normalMatrix, eye);
+        
+        // Set vertex buffers and draw
+        passEncoder.setVertexBuffer(0, part.vertexBuffer);
+        passEncoder.setVertexBuffer(1, part.normalBuffer);
+        passEncoder.setIndexBuffer(part.indexBuffer, 'uint16');
+        passEncoder.setBindGroup(0, uniformBindGroup);
+        passEncoder.drawIndexed(part.indices.length);
+    }
+    
+    passEncoder.end();
+    device.queue.submit([commandEncoder.finish()]);
+    
+    // Log once per second how many parts were drawn
+    if (!render.lastLog || Date.now() - render.lastLog > 1000) {
+        console.log(`Drew ${partsDrawn} parts`);
+        render.lastLog = Date.now();
+    }
+}
+
+function updateUniforms(mvpMatrix, modelMatrix, normalMatrix, viewPosition) {
+    // Pack uniforms into buffer
+    const uniformData = new Float32Array(80); // Increased size
+    let offset = 0;
+    
+    // MVP matrix (16 floats)
+    const mvpFlat = flatten(mvpMatrix);
+    for (let i = 0; i < mvpFlat.length; i++) {
+        uniformData[offset++] = mvpFlat[i];
+    }
+    
+    // Model matrix (16 floats)
+    const modelFlat = flatten(modelMatrix);
+    for (let i = 0; i < modelFlat.length; i++) {
+        uniformData[offset++] = modelFlat[i];
+    }
+    
+    // Normal matrix (9 floats as 3x vec3, each padded to vec4 = 12 floats total)
+    // Row 0
+    uniformData[offset++] = normalMatrix[0];
+    uniformData[offset++] = normalMatrix[1];
+    uniformData[offset++] = normalMatrix[2];
+    uniformData[offset++] = 0; // padding
+    // Row 1
+    uniformData[offset++] = normalMatrix[3];
+    uniformData[offset++] = normalMatrix[4];
+    uniformData[offset++] = normalMatrix[5];
+    uniformData[offset++] = 0; // padding
+    // Row 2
+    uniformData[offset++] = normalMatrix[6];
+    uniformData[offset++] = normalMatrix[7];
+    uniformData[offset++] = normalMatrix[8];
+    uniformData[offset++] = 0; // padding
+    
+    // Light position (3 floats + 1 padding)
+    uniformData[offset++] = 10;
+    uniformData[offset++] = 10;
+    uniformData[offset++] = 10;
+    uniformData[offset++] = 0;
+    
+    // View position (3 floats + 1 padding)
+    uniformData[offset++] = viewPosition[0];
+    uniformData[offset++] = viewPosition[1];
+    uniformData[offset++] = viewPosition[2];
+    uniformData[offset++] = 0;
+    
+    // Light color (3 floats + 1 padding)
+    uniformData[offset++] = 1;
+    uniformData[offset++] = 1;
+    uniformData[offset++] = 1;
+    uniformData[offset++] = 0;
+    
+    // Ambient (3 floats + 1 padding)
+    uniformData[offset++] = 0.2;
+    uniformData[offset++] = 0.2;
+    uniformData[offset++] = 0.3;
+    uniformData[offset++] = 0;
+    
+    // Diffuse (3 floats + 1 padding)
+    uniformData[offset++] = 0.8;
+    uniformData[offset++] = 0.8;
+    uniformData[offset++] = 0.9;
+    uniformData[offset++] = 0;
+    
+    // Specular (3 floats + 1 padding)
+    uniformData[offset++] = 1;
+    uniformData[offset++] = 1;
+    uniformData[offset++] = 1;
+    uniformData[offset++] = 0;
+    
+    // Shininess (1 float + 3 padding)
+    uniformData[offset++] = 32.0;
+    uniformData[offset++] = 0;
+    uniformData[offset++] = 0;
+    uniformData[offset++] = 0;
+    
+    device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 }
 
 function animate() {
@@ -270,6 +503,38 @@ function normalMatrixFromMat4(m) {
     ];
 }
 
+function parseOBJParts(objText) {
+    const lines = objText.split('\n');
+    const parts = {};
+    let currentPart = 'default';
+    let faceIndex = 0;
+    
+    for (let line of lines) {
+        line = line.trim();
+        
+        // Check for object/group definitions
+        if (line.startsWith('g ') || line.startsWith('o ')) {
+            const partName = line.substring(2).trim();
+            if (partName) {
+                currentPart = partName;
+                if (!parts[currentPart]) {
+                    parts[currentPart] = { startFace: faceIndex, endFace: faceIndex };
+                }
+            }
+        }
+        // Count faces
+        else if (line.startsWith('f ')) {
+            if (!parts[currentPart]) {
+                parts[currentPart] = { startFace: faceIndex, endFace: faceIndex };
+            }
+            parts[currentPart].endFace = faceIndex + 1;
+            faceIndex++;
+        }
+    }
+    
+    return parts;
+}
+
 async function loadModel() {
     const loadingStatus = document.getElementById('loadingStatus');
     const modelInfo = document.getElementById('modelInfo');
@@ -282,33 +547,139 @@ async function loadModel() {
     
     try {
         console.log('Loading Boeing 747 model...');
-        modelData = await readOBJFile('Boeing 747 with parts.obj', 1.0, false);
         
-        if (!modelData) {
-            throw new Error('Failed to load OBJ file');
-        }
-        
-        console.log('Model loaded successfully:', modelData);
-        
-        // Extract vertices, normals, and indices from the model data
+        // Clear previous model data
+        parts = {};
         vertices = [];
         normals = [];
         indices = [];
         
+        // Load the full model with OBJParser
+        // We need to modify readOBJFile to return the OBJDoc before it merges
+        const response = await fetch('Boeing747_with_parts.obj');
+        const objText = await response.text();
+        
+        const objDoc = new OBJDoc('Boeing747_with_parts.obj');
+        const result = await objDoc.parse(objText, 1.0, false);
+        
+        if (!result) {
+            throw new Error('Failed to parse OBJ file');
+        }
+        
+        console.log('Model parsed successfully');
+        console.log('Found', objDoc.objects.length, 'objects');
+        
+        // Now extract each object separately
+        for (let i = 0; i < objDoc.objects.length; i++) {
+            const obj = objDoc.objects[i];
+            console.log(`Processing object: ${obj.name}, faces: ${obj.faces.length}`);
+            
+            const partVertices = [];
+            const partNormals = [];
+            const partIndices = [];
+            const vertexMap = new Map(); // Map old vertex index to new
+            let newVertexIndex = 0;
+            
+            // Process each face of this object
+            for (let j = 0; j < obj.faces.length; j++) {
+                const face = obj.faces[j];
+                const faceNormal = face.normal;
+                
+                // Process each vertex in the face
+                for (let k = 0; k < face.vIndices.length; k++) {
+                    const vIdx = face.vIndices[k];
+                    const nIdx = face.nIndices[k];
+                    
+                    // Create a unique key for this vertex+normal combination
+                    const key = `${vIdx}_${nIdx}`;
+                    
+                    if (!vertexMap.has(key)) {
+                        // Add new vertex
+                        const vertex = objDoc.vertices[vIdx];
+                        partVertices.push(vertex.x, vertex.y, vertex.z);
+                        
+                        // Add normal
+                        if (nIdx >= 0) {
+                            const normal = objDoc.normals[nIdx];
+                            partNormals.push(normal.x, normal.y, normal.z);
+                        } else {
+                            partNormals.push(faceNormal.x, faceNormal.y, faceNormal.z);
+                        }
+                        
+                        vertexMap.set(key, newVertexIndex);
+                        newVertexIndex++;
+                    }
+                    
+                    // Add index
+                    partIndices.push(vertexMap.get(key));
+                }
+            }
+            
+            // Store this part
+            if (partVertices.length > 0) {
+                // Calculate bounding box for this part
+                let minX = Infinity, minY = Infinity, minZ = Infinity;
+                let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+                
+                for (let v = 0; v < partVertices.length; v += 3) {
+                    minX = Math.min(minX, partVertices[v]);
+                    maxX = Math.max(maxX, partVertices[v]);
+                    minY = Math.min(minY, partVertices[v + 1]);
+                    maxY = Math.max(maxY, partVertices[v + 1]);
+                    minZ = Math.min(minZ, partVertices[v + 2]);
+                    maxZ = Math.max(maxZ, partVertices[v + 2]);
+                }
+                
+                parts[obj.name] = {
+                    vertices: partVertices,
+                    normals: partNormals,
+                    indices: partIndices,
+                    vertexBuffer: null,
+                    normalBuffer: null,
+                    indexBuffer: null,
+                    bounds: { minX, maxX, minY, maxY, minZ, maxZ }
+                };
+                
+                console.log(`✓ Part ${obj.name}: ${partVertices.length/3} vertices, ${partIndices.length} indices`);
+                if (obj.name.includes('aileron')) {
+                    console.log(`  Bounds: X[${minX.toFixed(2)}, ${maxX.toFixed(2)}], Y[${minY.toFixed(2)}, ${maxY.toFixed(2)}], Z[${minZ.toFixed(2)}, ${maxZ.toFixed(2)}]`);
+                }
+            }
+        }
+        
+        // Get the merged DrawingInfo for backward compatibility
+        modelData = objDoc.getDrawingInfo();
+        
+        // Extract vertices and normals from merged data
         if (modelData.vertices && modelData.normals && modelData.indices) {
-            vertices = modelData.vertices;
-            normals = modelData.normals;
-            indices = modelData.indices;
+            // Convert 4-component vertices to 3-component (skip w component)
+            for (let i = 0; i < modelData.vertices.length; i += 4) {
+                vertices.push(modelData.vertices[i]);     // x
+                vertices.push(modelData.vertices[i + 1]); // y
+                vertices.push(modelData.vertices[i + 2]); // z
+            }
+            
+            // Convert 4-component normals to 3-component (skip w component)
+            for (let i = 0; i < modelData.normals.length; i += 4) {
+                normals.push(modelData.normals[i]);     // x
+                normals.push(modelData.normals[i + 1]); // y
+                normals.push(modelData.normals[i + 2]); // z
+            }
+            
+            // Copy indices as-is
+            indices = Array.from(modelData.indices);
         } else {
-            // Handle different data structure
-            console.log('Model data structure:', Object.keys(modelData));
-            // Try to extract data from the model structure
-            if (modelData.positions) vertices = modelData.positions;
-            if (modelData.normals) normals = modelData.normals;
-            if (modelData.indices) indices = modelData.indices;
+            console.error('Unexpected model data structure:', Object.keys(modelData));
         }
         
         console.log(`Loaded: ${vertices.length/3} vertices, ${normals.length/3} normals, ${indices.length} indices`);
+        console.log(`Total parts: ${Object.keys(parts).length}`);
+        console.log(`Parts list:`, Object.keys(parts));
+        console.log('=== PART NAMES (for control surfaces) ===');
+        Object.keys(parts).forEach(name => {
+            console.log(`  - "${name}"`);
+        });
+        console.log('=========================================');
         
         if (vertices.length === 0) {
             throw new Error('No vertex data found in model');
@@ -318,11 +689,14 @@ async function loadModel() {
         setupBuffers();
         
         // Update UI
+        const numParts = modelData.objects ? modelData.objects.length : 0;
+        const partNames = modelData.objects ? modelData.objects.map(obj => obj.name).join(', ') : 'N/A';
         modelInfo.innerHTML = `
             <strong>Model loaded successfully!</strong><br>
             Vertices: ${Math.floor(vertices.length/3)}<br>
             Triangles: ${Math.floor(indices.length/3)}<br>
-            Parts: ${modelData.objects ? modelData.objects.length : 'Unknown'}
+            Parts: ${numParts}<br>
+            <small>Parts: ${partNames}</small>
         `;
         
         toggleButton.disabled = false;
@@ -344,13 +718,28 @@ function resetView() {
     cameraAngleY = 0;
 }
 
+function aileronUp() {
+    leftAileronAngle = Math.min(leftAileronAngle + 5, 30); // Max 30 degrees up
+    console.log('Left aileron angle:', leftAileronAngle);
+}
+
+function aileronDown() {
+    leftAileronAngle = Math.max(leftAileronAngle - 5, -30); // Max 30 degrees down
+    console.log('Left aileron angle:', leftAileronAngle);
+}
+
+function aileronReset() {
+    leftAileronAngle = 0;
+    console.log('Left aileron reset to:', leftAileronAngle);
+}
+
 // Initialize the application
-function init() {
-    if (!initWebGL()) {
+async function init() {
+    if (!await initWebGPU()) {
         return;
     }
     
-    if (!initShaders()) {
+    if (!await initPipeline()) {
         return;
     }
     
@@ -362,6 +751,11 @@ function init() {
             isRotating ? 'Stop Rotation' : 'Start Rotation';
     });
     document.getElementById('resetView').addEventListener('click', resetView);
+    
+    // Add aileron control event listeners
+    document.getElementById('aileronUp').addEventListener('click', aileronUp);
+    document.getElementById('aileronDown').addEventListener('click', aileronDown);
+    document.getElementById('aileronReset').addEventListener('click', aileronReset);
     
     // Add mouse controls for camera
     let mouseDown = false;
@@ -403,7 +797,7 @@ function init() {
     // Start the render loop
     animate();
     
-    console.log('Boeing 747 Model Viewer initialized');
+    console.log('Boeing 747 Model Viewer initialized (WebGPU)');
 }
 
 // Start the application when the page loads

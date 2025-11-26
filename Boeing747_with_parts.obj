@@ -1,6 +1,6 @@
 # Blender 4.5.3 LTS
 # www.blender.org
-mtllib Boeing 747 with parts.mtl
+mtllib Boeing747_with_parts.mtl
 g Cylinder.005_Cylinder.005
 v -0.036933 -2.835050 -1.286248
 v -0.036933 -2.698377 -1.934102
