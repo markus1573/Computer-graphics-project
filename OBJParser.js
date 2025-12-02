@@ -24,7 +24,11 @@ async function readOBJFile(fileName, scale, reverse)
       console.log("OBJ file parsing error.");
       return null;
     }
-    return objDoc.getDrawingInfo();
+    // Return both the flattened info and the raw doc to allow group extraction
+    return { 
+        model: objDoc.getDrawingInfo(), 
+        doc: objDoc 
+    };
   }
   else
     return null;
@@ -307,6 +311,131 @@ OBJDoc.prototype.getDrawingInfo = function () {
         colors[vIdx * 4 + 2] = color.b;
         colors[vIdx * 4 + 3] = color.a;
         // Copy normal
+        var nIdx = face.nIndices[k];
+        if (nIdx >= 0) {
+          var normal = this.normals[nIdx];
+          normals[vIdx * 4 + 0] = normal.x;
+          normals[vIdx * 4 + 1] = normal.y;
+          normals[vIdx * 4 + 2] = normal.z;
+          normals[vIdx * 4 + 3] = 0.0;
+        } else {
+          normals[vIdx * 4 + 0] = faceNormal.x;
+          normals[vIdx * 4 + 1] = faceNormal.y;
+          normals[vIdx * 4 + 2] = faceNormal.z;
+          normals[vIdx * 4 + 3] = 0.0;
+        }
+        index_indices++;
+      }
+    }
+  }
+
+  return new DrawingInfo(vertices, normals, colors, indices);
+}
+
+// Get DrawingInfo for a specific group/object
+OBJDoc.prototype.getDrawingInfoForGroup = function (groupName) {
+  var numIndices = 0;
+  var targetObject = null;
+  
+  // Find the object
+  for (var i = 0; i < this.objects.length; i++) {
+    if (this.objects[i].name === groupName) {
+      targetObject = this.objects[i];
+      break;
+    }
+  }
+  
+  if (!targetObject) return null;
+  
+  numIndices = targetObject.numIndices;
+  var numVertices = this.vertices.length;
+  
+  // We allocate full size arrays to keep vertex indexing consistent
+  // This wastes memory but simplifies logic (no need to re-index vertices)
+  var vertices = new Float32Array(numVertices * 4);
+  var normals = new Float32Array(numVertices * 4);
+  var colors = new Float32Array(numVertices * 4);
+  var indices = new Uint32Array(numIndices);
+
+  var index_indices = 0;
+  var object = targetObject;
+  
+  for (var j = 0; j < object.faces.length; j++) {
+    var face = object.faces[j];
+    var color = this.findColor(face.materialName);
+    var faceNormal = face.normal;
+    for (var k = 0; k < face.vIndices.length; k++) {
+      // Set index
+      var vIdx = face.vIndices[k];
+      indices[index_indices] = vIdx;
+      // Copy vertex
+      var vertex = this.vertices[vIdx];
+      vertices[vIdx * 4 + 0] = vertex.x;
+      vertices[vIdx * 4 + 1] = vertex.y;
+      vertices[vIdx * 4 + 2] = vertex.z;
+      vertices[vIdx * 4 + 3] = 1.0;
+      // Copy color
+      colors[vIdx * 4 + 0] = color.r;
+      colors[vIdx * 4 + 1] = color.g;
+      colors[vIdx * 4 + 2] = color.b;
+      colors[vIdx * 4 + 3] = color.a;
+      // Copy normal
+      var nIdx = face.nIndices[k];
+      if (nIdx >= 0) {
+        var normal = this.normals[nIdx];
+        normals[vIdx * 4 + 0] = normal.x;
+        normals[vIdx * 4 + 1] = normal.y;
+        normals[vIdx * 4 + 2] = normal.z;
+        normals[vIdx * 4 + 3] = 0.0;
+      } else {
+        normals[vIdx * 4 + 0] = faceNormal.x;
+        normals[vIdx * 4 + 1] = faceNormal.y;
+        normals[vIdx * 4 + 2] = faceNormal.z;
+        normals[vIdx * 4 + 3] = 0.0;
+      }
+      index_indices++;
+    }
+  }
+
+  return new DrawingInfo(vertices, normals, colors, indices);
+}
+
+// Get DrawingInfo for all objects EXCEPT the specified ones
+OBJDoc.prototype.getDrawingInfoExcludingGroups = function (groupNames) {
+  var numIndices = 0;
+  for (var i = 0; i < this.objects.length; i++) {
+    if (!groupNames.includes(this.objects[i].name)) {
+      numIndices += this.objects[i].numIndices;
+    }
+  }
+  
+  var numVertices = this.vertices.length;
+  var vertices = new Float32Array(numVertices * 4);
+  var normals = new Float32Array(numVertices * 4);
+  var colors = new Float32Array(numVertices * 4);
+  var indices = new Uint32Array(numIndices);
+
+  var index_indices = 0;
+  for (var i = 0; i < this.objects.length; i++) {
+    var object = this.objects[i];
+    if (groupNames.includes(object.name)) continue;
+    
+    for (var j = 0; j < object.faces.length; j++) {
+      var face = object.faces[j];
+      var color = this.findColor(face.materialName);
+      var faceNormal = face.normal;
+      for (var k = 0; k < face.vIndices.length; k++) {
+        var vIdx = face.vIndices[k];
+        indices[index_indices] = vIdx;
+        var vertex = this.vertices[vIdx];
+        vertices[vIdx * 4 + 0] = vertex.x;
+        vertices[vIdx * 4 + 1] = vertex.y;
+        vertices[vIdx * 4 + 2] = vertex.z;
+        vertices[vIdx * 4 + 3] = 1.0;
+        colors[vIdx * 4 + 0] = color.r;
+        colors[vIdx * 4 + 1] = color.g;
+        colors[vIdx * 4 + 2] = color.b;
+        colors[vIdx * 4 + 3] = color.a;
         var nIdx = face.nIndices[k];
         if (nIdx >= 0) {
           var normal = this.normals[nIdx];
