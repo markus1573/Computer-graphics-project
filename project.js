@@ -473,7 +473,7 @@ function updateMatrices() {
     if (ENABLE_MOVEMENT_AND_BACKGROUND) {
         // Update Physics
         // Roll Rate: degrees per second. Let's say max deflection gives 45 deg/s
-        const rollRate = aileronAngle * dt; 
+        const rollRate = -aileronAngle * dt; 
         currentRoll += rollRate;
 
         // Pitch and Yaw Rates
@@ -941,11 +941,11 @@ const keys = {
 function updateControlAngles() {
     // Roll
     if (keys.a && !keys.d) {
-        aileronAngle = -AILERON_MAX_ANGLE;
-        rAileronAngle = -AILERON_MAX_ANGLE;
-    } else if (keys.d && !keys.a) {
         aileronAngle = AILERON_MAX_ANGLE;
         rAileronAngle = AILERON_MAX_ANGLE;
+    } else if (keys.d && !keys.a) {
+        aileronAngle = -AILERON_MAX_ANGLE;
+        rAileronAngle = -AILERON_MAX_ANGLE;
     } else {
         aileronAngle = 0;
         rAileronAngle = 0;
