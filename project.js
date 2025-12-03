@@ -159,7 +159,7 @@ async function initWebGPU() {
     context.configure({
         device: device,
         format: canvasFormat,
-        alphaMode: 'opaque',
+        alphaMode: 'premultiplied',
     });
     
     const shaderModule = device.createShaderModule({
@@ -312,13 +312,10 @@ function calculatePartMatrices(baseModelMatrix, viewMatrix, pivot, axis, angle) 
 // Update transformation matrices
 function updateMatrices() {
     // 1. Camera & Global Rotation
-    const time = autoRotate ? (Date.now() - rotationStartTime) * 0.001 : 0;
-    const angle = time * 0.5 + rotationOffset;
-    
-    const radius = 20.0;
-    const cameraX = radius * Math.sin(angle);
-    const cameraZ = radius * Math.cos(angle);
-    eye = vec3(cameraX, 5, cameraZ);
+    // Fixed camera relative to plane
+    eye = vec3(0, 5, -20);
+    at = vec3(0, 0, 0);
+    up = vec3(0, 1, 0);
 
     const viewMatrix = lookAt(eye, at, up);
     
@@ -380,11 +377,43 @@ function updateMatrices() {
     
     // --- LIGHT DIRECTION ---
     // Sun direction in World Space (e.g. from straight up)
-    const sunDirWorld = vec4(0.0, 1.0, 0.0, 0.0); // Directional light, w=0
+    let sunDirWorld = vec4(0.0, 1.0, 0.0, 0.0); // Directional light, w=0
     
+    // Rotate light opposite to plane rotation to simulate world rotation
+    // Plane Roll (Z) = aileronAngle
+    // Plane Pitch (X) = elevatorAngle
+    // Plane Yaw (Y) = rudderAngle
+    
+    // Inverse rotations (negative angles)
+    let rotZ = rotate(-aileronAngle, vec3(0, 0, 1));
+    let rotX = rotate(-elevatorAngle, vec3(1, 0, 0));
+    let rotY = rotate(-rudderAngle, vec3(0, 1, 0));
+    
+    // Apply rotations: Yaw -> Pitch -> Roll (inverse order of application for world)
+    // Actually, just rotating the vector is enough.
+    // Order: If plane rolls, world rolls opposite.
+    let lightRot = mult(rotZ, mult(rotX, rotY));
+    sunDirWorld = mult(lightRot, sunDirWorld);
+
     // Transform to View Space: L_view = View * L_world
     // Note: mult(mat4, vec4) returns array [x,y,z,w]
     let sunDirView = mult(viewMatrix, sunDirWorld);
+    
+    // --- UPDATE BACKGROUND CSS ---
+    const bgImage = document.getElementById('background-image');
+    if (bgImage) {
+        // Map angles to transforms
+        // Yaw (Y-axis rotation) -> X translation
+        // Pitch (X-axis rotation) -> Y translation
+        // Roll (Z-axis rotation) -> Rotation
+        
+        // Scale factors (tweak as needed)
+        const xTrans = -rudderAngle * 5; // px
+        const yTrans = elevatorAngle * 5; // px
+        const rot = -aileronAngle; // deg (Roll left = background rotates right)
+        
+        bgImage.style.transform = `translate(${xTrans}px, ${yTrans}px) rotate(${rot}deg)`;
+    }
     
     // --- WRITE TO BUFFER ---
     if (device && uniformBuffer) {
@@ -615,7 +644,7 @@ function render() {
         colorAttachments: [{
             view: msaaTexture.createView(),
             resolveTarget: context.getCurrentTexture().createView(),
-            clearValue: { r: 0.2, g: 0.3, b: 0.4, a: 1.0 },
+            clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
             loadOp: 'clear',
             storeOp: 'discard'
         }],
