@@ -2,6 +2,9 @@
 // Uses OBJParser.js and MV.js for model loading and matrix operations
 
 // Global variables
+// Toggle for background and physics (Debug)
+const ENABLE_MOVEMENT_AND_BACKGROUND = true;
+
 let device, context, pipeline;
 let uniformBuffer;
 let uniformBindGroupBody, uniformBindGroupAileron, uniformBindGroupRAileron;
@@ -94,6 +97,8 @@ let rAileronAngle = 0;
 let elevatorAngle = 0;
 let rudderAngle = 0;
 const AILERON_MAX_ANGLE = 45;
+
+
 
 // Flight Physics State
 let currentRoll = 0;
@@ -465,42 +470,44 @@ function updateMatrices() {
     const dt = (now - lastFrameTime) / 1000;
     lastFrameTime = now;
 
-    // Update Physics
-    // Roll Rate: degrees per second. Let's say max deflection gives 45 deg/s
-    const rollRate = aileronAngle * dt; 
-    currentRoll += rollRate;
+    if (ENABLE_MOVEMENT_AND_BACKGROUND) {
+        // Update Physics
+        // Roll Rate: degrees per second. Let's say max deflection gives 45 deg/s
+        const rollRate = aileronAngle * dt; 
+        currentRoll += rollRate;
 
-    // Pitch and Yaw Rates
-    // These affect the world rotation
-    // Pitch Rate: degrees per second
-    const pitchRate = -elevatorAngle * dt; // Elevator up (positive) -> Pitch up (negative rotation for world)
-    // Yaw Rate: degrees per second
-    const yawRate = rudderAngle * dt; // Rudder left (negative) -> Yaw left (positive rotation for world?)
-    // Let's check signs:
-    // Rudder Left (Q) -> rudderAngle = -45.
-    // We want plane to turn left. World turns right (CW).
-    // rotate(angle, Y). Positive angle is CCW. Negative is CW.
-    // So rudderAngle negative -> world rotation negative?
-    // Previous code: rotY = rotate(rudderAngle, ...).
-    // So if rudderAngle is -45, rotY is rotate(-45).
-    // So yawRate should be proportional to rudderAngle.
+        // Pitch and Yaw Rates
+        // These affect the world rotation
+        // Pitch Rate: degrees per second
+        const pitchRate = -elevatorAngle * dt; // Elevator up (positive) -> Pitch up (negative rotation for world)
+        // Yaw Rate: degrees per second
+        const yawRate = rudderAngle * dt; // Rudder left (negative) -> Yaw left (positive rotation for world?)
+        // Let's check signs:
+        // Rudder Left (Q) -> rudderAngle = -45.
+        // We want plane to turn left. World turns right (CW).
+        // rotate(angle, Y). Positive angle is CCW. Negative is CW.
+        // So rudderAngle negative -> world rotation negative?
+        // Previous code: rotY = rotate(rudderAngle, ...).
+        // So if rudderAngle is -45, rotY is rotate(-45).
+        // So yawRate should be proportional to rudderAngle.
 
-    if (Math.abs(pitchRate) > 0.001 || Math.abs(yawRate) > 0.001) {
-        // Calculate axes based on currentRoll
-        // The plane is rolled by currentRoll around Z.
-        // Pitch axis (local X) in world space:
-        let planeRollMat = rotate(currentRoll, vec3(0, 0, 1));
-        let pitchAxis = vec3(mult(planeRollMat, vec4(1, 0, 0, 0)));
-        let yawAxis = vec3(mult(planeRollMat, vec4(0, 1, 0, 0)));
+        if (Math.abs(pitchRate) > 0.001 || Math.abs(yawRate) > 0.001) {
+            // Calculate axes based on currentRoll
+            // The plane is rolled by currentRoll around Z.
+            // Pitch axis (local X) in world space:
+            let planeRollMat = rotate(currentRoll, vec3(0, 0, 1));
+            let pitchAxis = vec3(mult(planeRollMat, vec4(1, 0, 0, 0)));
+            let yawAxis = vec3(mult(planeRollMat, vec4(0, 1, 0, 0)));
 
-        // Create incremental rotations
-        let deltaPitch = rotate(pitchRate, pitchAxis);
-        let deltaYaw = rotate(yawRate, yawAxis);
+            // Create incremental rotations
+            let deltaPitch = rotate(pitchRate, pitchAxis);
+            let deltaYaw = rotate(yawRate, yawAxis);
 
-        // Apply to accumulated rotation
-        // Order: Yaw then Pitch? Or combined? Small angles, order matters less.
-        let deltaRot = mult(deltaPitch, deltaYaw);
-        accumulatedWorldRotation = mult(deltaRot, accumulatedWorldRotation);
+            // Apply to accumulated rotation
+            // Order: Yaw then Pitch? Or combined? Small angles, order matters less.
+            let deltaRot = mult(deltaPitch, deltaYaw);
+            accumulatedWorldRotation = mult(deltaRot, accumulatedWorldRotation);
+        }
     }
 
     // 1. Camera & Global Rotation
@@ -851,7 +858,7 @@ function render() {
     const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
     
     // Draw Background
-    if (backgroundPipeline && backgroundBindGroup) {
+    if (ENABLE_MOVEMENT_AND_BACKGROUND && backgroundPipeline && backgroundBindGroup) {
         passEncoder.setPipeline(backgroundPipeline);
         passEncoder.setBindGroup(0, backgroundBindGroup);
         passEncoder.draw(6);
