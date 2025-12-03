@@ -8,6 +8,9 @@ let uniformBindGroupBody, uniformBindGroupAileron, uniformBindGroupRAileron;
 let uniformBindGroupLElevator, uniformBindGroupRElevator;
 let uniformBindGroupRudder;
 
+// Textures for MSAA and Depth
+let depthTexture, msaaTexture;
+
 // Body buffers
 let bodyVertexBuffer, bodyNormalBuffer, bodyColorBuffer, bodyIndexBuffer;
 let numBodyIndices = 0;
@@ -43,7 +46,7 @@ let aileronAngle = 0;
 let rAileronAngle = 0;
 let elevatorAngle = 0;
 let rudderAngle = 0;
-const AILERON_MAX_ANGLE = 30;
+const AILERON_MAX_ANGLE = 45;
 
 // Camera parameters
 let eye = vec3(0, 5, -20);
@@ -95,13 +98,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // Re-normalize interpolated vectors
-    var N = normalize(input.normal);
+    let N = normalize(input.normal);
     let V = normalize(-input.viewPosition);
-    
-    // Double-sided lighting fix
-    if (dot(N, V) < 0.0) {
-        N = -N;
-    }
     
     // Lighting parameters
     let kd = 1.0;
@@ -195,8 +193,11 @@ async function initWebGPU() {
         },
         primitive: {
             topology: 'triangle-list',
-            cullMode: 'none',
+            cullMode: 'back',
             frontFace: 'ccw'
+        },
+        multisample: {
+            count: 4,
         },
         depthStencil: {
             depthWriteEnabled: true,
@@ -552,12 +553,6 @@ async function loadModel() {
         // Display info
         modelInfo.innerHTML = `
             <p><strong>Model loaded successfully!</strong></p>
-            <p>Body Indices: ${numBodyIndices}</p>
-            <p>L Aileron Indices: ${numAileronIndices}</p>
-            <p>R Aileron Indices: ${numRAileronIndices}</p>
-            <p>L Elevator Indices: ${numLElevatorIndices}</p>
-            <p>R Elevator Indices: ${numRElevatorIndices}</p>
-            <p>Rudder Indices: ${numRudderIndices}</p>
         `;
         
         loadingStatus.style.display = 'none';
@@ -580,26 +575,55 @@ function render() {
     updateMatrices();
     
     const canvas = document.getElementById('canvas');
-    const depthTexture = device.createTexture({
-        size: [canvas.width, canvas.height],
-        format: 'depth24plus',
-        usage: GPUTextureUsage.RENDER_ATTACHMENT
-    });
+    
+    // Handle High DPI
+    const devicePixelRatio = window.devicePixelRatio || 1;
+    const presentationWidth = canvas.clientWidth * devicePixelRatio;
+    const presentationHeight = canvas.clientHeight * devicePixelRatio;
+
+    if (canvas.width !== presentationWidth || canvas.height !== presentationHeight) {
+        canvas.width = presentationWidth;
+        canvas.height = presentationHeight;
+        
+        if (depthTexture) depthTexture.destroy();
+        if (msaaTexture) msaaTexture.destroy();
+        depthTexture = null;
+        msaaTexture = null;
+    }
+
+    if (!depthTexture) {
+        depthTexture = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: 'depth24plus',
+            usage: GPUTextureUsage.RENDER_ATTACHMENT,
+            sampleCount: 4
+        });
+    }
+
+    if (!msaaTexture) {
+        msaaTexture = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: navigator.gpu.getPreferredCanvasFormat(),
+            usage: GPUTextureUsage.RENDER_ATTACHMENT,
+            sampleCount: 4
+        });
+    }
     
     const commandEncoder = device.createCommandEncoder();
     
     const renderPassDescriptor = {
         colorAttachments: [{
-            view: context.getCurrentTexture().createView(),
+            view: msaaTexture.createView(),
+            resolveTarget: context.getCurrentTexture().createView(),
             clearValue: { r: 0.2, g: 0.3, b: 0.4, a: 1.0 },
             loadOp: 'clear',
-            storeOp: 'store'
+            storeOp: 'discard'
         }],
         depthStencilAttachment: {
             view: depthTexture.createView(),
             depthClearValue: 1.0,
             depthLoadOp: 'clear',
-            depthStoreOp: 'store'
+            depthStoreOp: 'discard'
         }
     };
     
@@ -682,14 +706,6 @@ function resetView() {
 }
 
 // Event listeners
-document.getElementById('loadModel').addEventListener('click', async () => {
-    if (!device) {
-        const success = await initWebGPU();
-        if (!success) return;
-    }
-    await loadModel();
-});
-
 document.getElementById('toggleRotation').addEventListener('click', () => {
     autoRotate = !autoRotate;
     const button = document.getElementById('toggleRotation');
@@ -705,77 +721,52 @@ document.getElementById('toggleRotation').addEventListener('click', () => {
 
 document.getElementById('resetView').addEventListener('click', resetView);
 
-// Aileron controls
-document.getElementById('aileronUp').addEventListener('click', () => {
-    // Inverted: Up button increases angle (moves trailing edge up)
-    aileronAngle = Math.min(aileronAngle + 5, AILERON_MAX_ANGLE);
-    console.log('Aileron Angle:', aileronAngle);
+// Keyboard controls
+document.addEventListener('keydown', (event) => {
+    const step = 5;
+    switch(event.key.toLowerCase()) {
+        // Roll (A/D)
+        case 'a': // Left Aileron Down, Right Aileron Up
+            aileronAngle = Math.max(aileronAngle - step, -AILERON_MAX_ANGLE);
+            rAileronAngle = Math.max(rAileronAngle - step, -AILERON_MAX_ANGLE);
+            console.log('Roll Left (A):', aileronAngle, rAileronAngle);
+            break;
+        case 'd': // Left Aileron Up, Right Aileron Down
+            aileronAngle = Math.min(aileronAngle + step, AILERON_MAX_ANGLE);
+            rAileronAngle = Math.min(rAileronAngle + step, AILERON_MAX_ANGLE);
+            console.log('Roll Right (D):', aileronAngle, rAileronAngle);
+            break;
+
+        // Pitch (W/S)
+        case 'w': // Pitch Down
+            elevatorAngle = Math.max(elevatorAngle - step, -AILERON_MAX_ANGLE);
+            console.log('Pitch Down (W):', elevatorAngle);
+            break;
+        case 's': // Pitch Up
+            elevatorAngle = Math.min(elevatorAngle + step, AILERON_MAX_ANGLE);
+            console.log('Pitch Up (S):', elevatorAngle);
+            break;
+
+        // Yaw (Q/E)
+        case 'q': // Yaw Left
+            rudderAngle = Math.max(rudderAngle - step, -AILERON_MAX_ANGLE);
+            console.log('Yaw Left (Q):', rudderAngle);
+            break;
+        case 'e': // Yaw Right
+            rudderAngle = Math.min(rudderAngle + step, AILERON_MAX_ANGLE);
+            console.log('Yaw Right (E):', rudderAngle);
+            break;
+    }
 });
 
-document.getElementById('aileronDown').addEventListener('click', () => {
-    // Inverted: Down button decreases angle
-    aileronAngle = Math.max(aileronAngle - 5, -AILERON_MAX_ANGLE);
-    console.log('Aileron Angle:', aileronAngle);
-});
-
-document.getElementById('aileronReset').addEventListener('click', () => {
-    aileronAngle = 0;
-    console.log('Aileron Angle:', aileronAngle);
-});
-
-// Right Aileron controls
-document.getElementById('rAileronUp').addEventListener('click', () => {
-    // Right Aileron: Positive rotation around (-X) axis moves trailing edge DOWN.
-    // So "Up" button should decrease angle (Negative rotation) to move trailing edge UP.
-    rAileronAngle = Math.max(rAileronAngle - 5, -AILERON_MAX_ANGLE);
-    console.log('R Aileron Angle:', rAileronAngle);
-});
-
-document.getElementById('rAileronDown').addEventListener('click', () => {
-    // "Down" button increases angle
-    rAileronAngle = Math.min(rAileronAngle + 5, AILERON_MAX_ANGLE);
-    console.log('R Aileron Angle:', rAileronAngle);
-});
-
-document.getElementById('rAileronReset').addEventListener('click', () => {
-    rAileronAngle = 0;
-    console.log('R Aileron Angle:', rAileronAngle);
-});
-
-// Elevator controls
-document.getElementById('elevatorUp').addEventListener('click', () => {
-    // Up button increases angle (Trailing edge UP for Left, handled in updateMatrices for Right)
-    elevatorAngle = Math.min(elevatorAngle + 5, AILERON_MAX_ANGLE);
-    console.log('Elevator Angle:', elevatorAngle);
-});
-
-document.getElementById('elevatorDown').addEventListener('click', () => {
-    // Down button decreases angle
-    elevatorAngle = Math.max(elevatorAngle - 5, -AILERON_MAX_ANGLE);
-    console.log('Elevator Angle:', elevatorAngle);
-});
-
-document.getElementById('elevatorReset').addEventListener('click', () => {
-    elevatorAngle = 0;
-    console.log('Elevator Angle:', elevatorAngle);
-});
-
-// Rudder controls
-document.getElementById('rudderLeft').addEventListener('click', () => {
-    // Left button decreases angle (Negative rotation -> Left)
-    rudderAngle = Math.max(rudderAngle - 5, -AILERON_MAX_ANGLE);
-    console.log('Rudder Angle:', rudderAngle);
-});
-
-document.getElementById('rudderRight').addEventListener('click', () => {
-    // Right button increases angle (Positive rotation -> Right)
-    rudderAngle = Math.min(rudderAngle + 5, AILERON_MAX_ANGLE);
-    console.log('Rudder Angle:', rudderAngle);
-});
-
-document.getElementById('rudderReset').addEventListener('click', () => {
-    rudderAngle = 0;
-    console.log('Rudder Angle:', rudderAngle);
+// Auto-load model on startup
+window.addEventListener('load', async () => {
+    console.log('Auto-loading model...');
+    if (!device) {
+        const success = await initWebGPU();
+        if (!success) return;
+    }
+    await loadModel();
 });
 
 console.log('Boeing 747 WebGPU Viewer initialized.');

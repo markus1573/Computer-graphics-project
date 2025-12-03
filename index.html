@@ -26,6 +26,8 @@
             background-color: #000;
             display: block;
             margin: 0 auto;
+            width: 800px;
+            height: 600px;
         }
         .controls {
             margin-top: 20px;
@@ -67,42 +69,17 @@
         <canvas id="canvas" width="800" height="600"></canvas>
         
         <div class="controls">
-            <button id="loadModel">Load Boeing 747 Model</button>
             <button id="toggleRotation" disabled>Toggle Rotation</button>
             <button id="resetView">Reset View</button>
         </div>
         
         <div class="controls">
-            <h4 style="margin: 10px 0;">Left Aileron Control</h4>
-            <button id="aileronUp">Aileron Up ↑</button>
-            <button id="aileronDown">Aileron Down ↓</button>
-            <button id="aileronReset">Reset Aileron</button>
-        </div>
-
-        <div class="controls">
-            <h4 style="margin: 10px 0;">Right Aileron Control</h4>
-            <button id="rAileronUp">Aileron Up ↑</button>
-            <button id="rAileronDown">Aileron Down ↓</button>
-            <button id="rAileronReset">Reset Aileron</button>
-        </div>
-
-        <div class="controls">
-            <h4 style="margin: 10px 0;">Elevator Control</h4>
-            <button id="elevatorUp">Elevators Up ↑</button>
-            <button id="elevatorDown">Elevators Down ↓</button>
-            <button id="elevatorReset">Reset Elevators</button>
-        </div>
-
-        <div class="controls">
-            <h4 style="margin: 10px 0;">Rudder Control</h4>
-            <button id="rudderLeft">Rudder Left ←</button>
-            <button id="rudderRight">Rudder Right →</button>
-            <button id="rudderReset">Reset Rudder</button>
+            <p><strong>Controls:</strong> W/S (Pitch) | A/D (Roll) | Q/E (Yaw)</p>
         </div>
         
         <div class="info">
             <h3>Boeing 747 3D Model</h3>
-            <p>This viewer displays a detailed Boeing 747 aircraft model with multiple parts. Click "Load Boeing 747 Model" to begin.</p>
+            <p>This viewer displays a detailed Boeing 747 aircraft model with multiple parts.</p>
             <div id="modelInfo"></div>
             <div id="loadingStatus" class="loading" style="display: none;">Loading model...</div>
         </div>
