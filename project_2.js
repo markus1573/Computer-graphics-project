@@ -161,7 +161,7 @@ async function initWebGPU() {
     context.configure({
         device: device,
         format: canvasFormat,
-        alphaMode: 'opaque',
+        alphaMode: 'premultiplied',
     });
     
     const shaderModule = device.createShaderModule({
@@ -591,8 +591,7 @@ function render() {
     const renderPassDescriptor = {
         colorAttachments: [{
             view: context.getCurrentTexture().createView(),
-            clearValue: { r: 0.2, g: 0.3, b: 0.4, a: 1.0 },
-            loadOp: 'clear',
+            loadOp: 'load',
             storeOp: 'store'
         }],
         depthStencilAttachment: {
