@@ -35,10 +35,57 @@ let numRElevatorIndices = 0;
 let rudderVertexBuffer, rudderNormalBuffer, rudderColorBuffer, rudderIndexBuffer;
 let numRudderIndices = 0;
 
+// Background resources
+let backgroundPipeline;
+let backgroundBindGroup;
+let backgroundUniformBuffer;
+let textureCube;
+let textureSampler;
+
+// Background Shader Code
+const backgroundShaderCode = `
+struct Uniforms {
+    viewDirectionProjectionInverse: mat4x4<f32>,
+}
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var mySampler: sampler;
+@group(0) @binding(2) var myTexture: texture_cube<f32>;
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) texCoord: vec3<f32>,
+}
+
+@vertex
+fn vertexMain(@builtin(vertex_index) VertexIndex : u32) -> VertexOutput {
+    var pos = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>( 1.0,  1.0)
+    );
+    
+    var output: VertexOutput;
+    let xy = pos[VertexIndex];
+    output.position = vec4<f32>(xy, 0.9999, 1.0);
+    
+    // Calculate direction vector
+    let t = uniforms.viewDirectionProjectionInverse * output.position;
+    output.texCoord = t.xyz / t.w;
+    
+    return output;
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(myTexture, mySampler, normalize(input.texCoord));
+}
+`;
+
 let modelViewMatrix, projectionMatrix;
-let autoRotate = false;
-let rotationStartTime = Date.now();
-let rotationOffset = Math.PI; // Start from behind (180 degrees)
 let modelLoaded = false;
 
 // Animation state
@@ -47,6 +94,11 @@ let rAileronAngle = 0;
 let elevatorAngle = 0;
 let rudderAngle = 0;
 const AILERON_MAX_ANGLE = 45;
+
+// Flight Physics State
+let currentRoll = 0;
+let accumulatedWorldRotation = mat4(); // Identity matrix
+let lastFrameTime = Date.now();
 
 // Camera parameters
 let eye = vec3(0, 5, -20);
@@ -137,6 +189,46 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
+// Load Cubemap
+async function loadCubeMap() {
+    const urls = [
+        'cubemaps/terrain_cubemap/terrain_posx.png',
+        'cubemaps/terrain_cubemap/terrain_negx.png',
+        'cubemaps/terrain_cubemap/terrain_posy.png',
+        'cubemaps/terrain_cubemap/terrain_negy.png',
+        'cubemaps/terrain_cubemap/terrain_posz.png',
+        'cubemaps/terrain_cubemap/terrain_negz.png'
+    ];
+    
+    const promises = urls.map(async (src) => {
+        const response = await fetch(src);
+        const blob = await response.blob();
+        return createImageBitmap(blob);
+    });
+    
+    const images = await Promise.all(promises);
+    
+    textureCube = device.createTexture({
+        dimension: '2d',
+        size: [images[0].width, images[0].height, 6],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    
+    for (let i = 0; i < 6; i++) {
+        device.queue.copyExternalImageToTexture(
+            { source: images[i] },
+            { texture: textureCube, origin: [0, 0, i] },
+            [images[i].width, images[i].height]
+        );
+    }
+    
+    textureSampler = device.createSampler({
+        magFilter: 'linear',
+        minFilter: 'linear',
+    });
+}
+
 // Initialize WebGPU
 async function initWebGPU() {
     const canvas = document.getElementById('canvas');
@@ -161,7 +253,11 @@ async function initWebGPU() {
         format: canvasFormat,
         alphaMode: 'premultiplied',
     });
+
+    // Load Cubemap
+    await loadCubeMap();
     
+    // --- MAIN PIPELINE ---
     const shaderModule = device.createShaderModule({
         code: shaderCode
     });
@@ -204,6 +300,59 @@ async function initWebGPU() {
             depthCompare: 'less',
             format: 'depth24plus'
         }
+    });
+
+    // --- BACKGROUND PIPELINE ---
+    const bgShaderModule = device.createShaderModule({
+        code: backgroundShaderCode
+    });
+
+    backgroundPipeline = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: {
+            module: bgShaderModule,
+            entryPoint: 'vertexMain',
+        },
+        fragment: {
+            module: bgShaderModule,
+            entryPoint: 'fragmentMain',
+            targets: [{ format: canvasFormat }]
+        },
+        primitive: {
+            topology: 'triangle-list',
+        },
+        multisample: {
+            count: 4,
+        },
+        depthStencil: {
+            depthWriteEnabled: false, // Background doesn't write depth
+            depthCompare: 'always', // Always draw
+            format: 'depth24plus'
+        }
+    });
+
+    // Background Uniform Buffer
+    backgroundUniformBuffer = device.createBuffer({
+        size: 64, // mat4
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+    });
+
+    backgroundBindGroup = device.createBindGroup({
+        layout: backgroundPipeline.getBindGroupLayout(0),
+        entries: [
+            {
+                binding: 0,
+                resource: { buffer: backgroundUniformBuffer }
+            },
+            {
+                binding: 1,
+                resource: textureSampler
+            },
+            {
+                binding: 2,
+                resource: textureCube.createView({ dimension: 'cube' })
+            }
+        ]
     });
     
     // Create uniform buffer for 6 objects (Body + L_Ail + R_Ail + L_Elev + R_Elev + Rudder)
@@ -311,6 +460,49 @@ function calculatePartMatrices(baseModelMatrix, viewMatrix, pivot, axis, angle) 
 
 // Update transformation matrices
 function updateMatrices() {
+    // Calculate Delta Time
+    const now = Date.now();
+    const dt = (now - lastFrameTime) / 1000;
+    lastFrameTime = now;
+
+    // Update Physics
+    // Roll Rate: degrees per second. Let's say max deflection gives 45 deg/s
+    const rollRate = aileronAngle * dt; 
+    currentRoll += rollRate;
+
+    // Pitch and Yaw Rates
+    // These affect the world rotation
+    // Pitch Rate: degrees per second
+    const pitchRate = -elevatorAngle * dt; // Elevator up (positive) -> Pitch up (negative rotation for world)
+    // Yaw Rate: degrees per second
+    const yawRate = rudderAngle * dt; // Rudder left (negative) -> Yaw left (positive rotation for world?)
+    // Let's check signs:
+    // Rudder Left (Q) -> rudderAngle = -45.
+    // We want plane to turn left. World turns right (CW).
+    // rotate(angle, Y). Positive angle is CCW. Negative is CW.
+    // So rudderAngle negative -> world rotation negative?
+    // Previous code: rotY = rotate(rudderAngle, ...).
+    // So if rudderAngle is -45, rotY is rotate(-45).
+    // So yawRate should be proportional to rudderAngle.
+
+    if (Math.abs(pitchRate) > 0.001 || Math.abs(yawRate) > 0.001) {
+        // Calculate axes based on currentRoll
+        // The plane is rolled by currentRoll around Z.
+        // Pitch axis (local X) in world space:
+        let planeRollMat = rotate(currentRoll, vec3(0, 0, 1));
+        let pitchAxis = vec3(mult(planeRollMat, vec4(1, 0, 0, 0)));
+        let yawAxis = vec3(mult(planeRollMat, vec4(0, 1, 0, 0)));
+
+        // Create incremental rotations
+        let deltaPitch = rotate(pitchRate, pitchAxis);
+        let deltaYaw = rotate(yawRate, yawAxis);
+
+        // Apply to accumulated rotation
+        // Order: Yaw then Pitch? Or combined? Small angles, order matters less.
+        let deltaRot = mult(deltaPitch, deltaYaw);
+        accumulatedWorldRotation = mult(deltaRot, accumulatedWorldRotation);
+    }
+
     // 1. Camera & Global Rotation
     // Fixed camera relative to plane
     eye = vec3(0, 5, -20);
@@ -333,6 +525,11 @@ function updateMatrices() {
     const baseTrans = translate(-3.9, 4.84, 2.6);
     const baseScale = scalem(2.0, 2.0, 2.0);
     let baseModelMatrix = mult(baseTrans, baseScale);
+    
+    // Apply Roll to the plane (Rotate around Z axis)
+    // Positive angle for Counter-Clockwise rotation (Roll Left) when looking down +Z
+    let planeRoll = rotate(currentRoll, vec3(0, 0, 1));
+    baseModelMatrix = mult(planeRoll, baseModelMatrix);
     
     // --- BODY TRANSFORM ---
     let bodyModelView = mult(viewMatrix, baseModelMatrix);
@@ -379,40 +576,36 @@ function updateMatrices() {
     // Sun direction in World Space (e.g. from straight up)
     let sunDirWorld = vec4(0.0, 1.0, 0.0, 0.0); // Directional light, w=0
     
-    // Rotate light opposite to plane rotation to simulate world rotation
-    // Plane Roll (Z) = aileronAngle
-    // Plane Pitch (X) = elevatorAngle
-    // Plane Yaw (Y) = rudderAngle
-    
-    // Inverse rotations (negative angles)
-    let rotZ = rotate(-aileronAngle, vec3(0, 0, 1));
-    let rotX = rotate(-elevatorAngle, vec3(1, 0, 0));
-    let rotY = rotate(-rudderAngle, vec3(0, 1, 0));
-    
-    // Apply rotations: Yaw -> Pitch -> Roll (inverse order of application for world)
-    // Actually, just rotating the vector is enough.
-    // Order: If plane rolls, world rolls opposite.
-    let lightRot = mult(rotZ, mult(rotX, rotY));
-    sunDirWorld = mult(lightRot, sunDirWorld);
+    // Use accumulated world rotation
+    sunDirWorld = mult(accumulatedWorldRotation, sunDirWorld);
 
     // Transform to View Space: L_view = View * L_world
-    // Note: mult(mat4, vec4) returns array [x,y,z,w]
     let sunDirView = mult(viewMatrix, sunDirWorld);
     
-    // --- UPDATE BACKGROUND CSS ---
-    const bgImage = document.getElementById('background-image');
-    if (bgImage) {
-        // Map angles to transforms
-        // Yaw (Y-axis rotation) -> X translation
-        // Pitch (X-axis rotation) -> Y translation
-        // Roll (Z-axis rotation) -> Rotation
-        
-        // Scale factors (tweak as needed)
-        const xTrans = -rudderAngle * 5; // px
-        const yTrans = elevatorAngle * 5; // px
-        const rot = -aileronAngle; // deg (Roll left = background rotates right)
-        
-        bgImage.style.transform = `translate(${xTrans}px, ${yTrans}px) rotate(${rot}deg)`;
+    // --- SKYBOX MATRIX ---
+    // Remove translation from viewMatrix for skybox
+    let viewRotationOnly = mat4();
+    // Copy rotation part (upper 3x3)
+    viewRotationOnly[0][0] = viewMatrix[0][0]; viewRotationOnly[0][1] = viewMatrix[0][1]; viewRotationOnly[0][2] = viewMatrix[0][2];
+    viewRotationOnly[1][0] = viewMatrix[1][0]; viewRotationOnly[1][1] = viewMatrix[1][1]; viewRotationOnly[1][2] = viewMatrix[1][2];
+    viewRotationOnly[2][0] = viewMatrix[2][0]; viewRotationOnly[2][1] = viewMatrix[2][1]; viewRotationOnly[2][2] = viewMatrix[2][2];
+    // Set translation to 0 and w to 1
+    viewRotationOnly[0][3] = 0.0;
+    viewRotationOnly[1][3] = 0.0;
+    viewRotationOnly[2][3] = 0.0;
+    viewRotationOnly[3][0] = 0.0; viewRotationOnly[3][1] = 0.0; viewRotationOnly[3][2] = 0.0; viewRotationOnly[3][3] = 1.0;
+    
+    // Combine with world rotation (accumulatedWorldRotation)
+    // The skybox should rotate with the world
+    let skyboxView = mult(viewRotationOnly, accumulatedWorldRotation);
+    
+    // Calculate inverse view-projection
+    let viewProjection = mult(projectionMatrix, skyboxView);
+    let viewDirectionProjectionInverse = inverse(viewProjection);
+    
+    // Write to background buffer
+    if (device && backgroundUniformBuffer) {
+        device.queue.writeBuffer(backgroundUniformBuffer, 0, flatten(viewDirectionProjectionInverse));
     }
     
     // --- WRITE TO BUFFER ---
@@ -510,7 +703,7 @@ async function loadModel() {
     loadingStatus.textContent = 'Loading Boeing 747 model...';
     try {
         // Load the OBJ file
-        const result = await readOBJFile('Boeing747_simple_v2.obj', 1.0, false);
+        const result = await readOBJFile('Boeing747_ny.obj', 1.0, false);
         
         if (!result) {
             throw new Error('Failed to load OBJ file');
@@ -520,12 +713,12 @@ async function loadModel() {
         
         // Split geometry
         // Exclude ailerons, elevators and rudder from body
-        const bodyInfo = doc.getDrawingInfoExcludingGroups(['L_aileron_Cube', 'R_aileron_Cube.001', 'L_elevator_Cube.003', 'R_elevator_Cube.002', 'Rudder_Cube.004']);
-        const aileronInfo = doc.getDrawingInfoForGroup('L_aileron_Cube');
-        const rAileronInfo = doc.getDrawingInfoForGroup('R_aileron_Cube.001');
-        const lElevatorInfo = doc.getDrawingInfoForGroup('L_elevator_Cube.003');
-        const rElevatorInfo = doc.getDrawingInfoForGroup('R_elevator_Cube.002');
-        const rudderInfo = doc.getDrawingInfoForGroup('Rudder_Cube.004');
+        const bodyInfo = doc.getDrawingInfoExcludingGroups(['L_aileron', 'R_aileron', 'L_elevator', 'R_elevator', 'Rudder']);
+        const aileronInfo = doc.getDrawingInfoForGroup('L_aileron');
+        const rAileronInfo = doc.getDrawingInfoForGroup('R_aileron');
+        const lElevatorInfo = doc.getDrawingInfoForGroup('L_elevator');
+        const rElevatorInfo = doc.getDrawingInfoForGroup('R_elevator');
+        const rudderInfo = doc.getDrawingInfoForGroup('Rudder');
         
         if (!bodyInfo || !aileronInfo || !rAileronInfo || !lElevatorInfo || !rElevatorInfo || !rudderInfo) {
              throw new Error('Failed to split model geometry. Check group names.');
@@ -586,7 +779,6 @@ async function loadModel() {
         
         loadingStatus.style.display = 'none';
         modelLoaded = true;
-        document.getElementById('toggleRotation').disabled = false;
         
         render();
         
@@ -657,6 +849,14 @@ function render() {
     };
     
     const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+    
+    // Draw Background
+    if (backgroundPipeline && backgroundBindGroup) {
+        passEncoder.setPipeline(backgroundPipeline);
+        passEncoder.setBindGroup(0, backgroundBindGroup);
+        passEncoder.draw(6);
+    }
+
     passEncoder.setPipeline(pipeline);
     
     // Draw Body
@@ -724,67 +924,58 @@ function render() {
     requestAnimationFrame(render);
 }
 
-// Reset view
-function resetView() {
-    autoRotate = false;
-    document.getElementById('toggleRotation').textContent = 'Start Rotation';
-    rotationOffset = Math.PI;
-    eye = vec3(0, 5, -20);
-    at = vec3(0, 0, 0);
-    updateMatrices();
+// Keyboard controls
+const keys = {
+    a: false, d: false, // Roll
+    w: false, s: false, // Pitch
+    q: false, e: false  // Yaw
+};
+
+function updateControlAngles() {
+    // Roll
+    if (keys.a && !keys.d) {
+        aileronAngle = -AILERON_MAX_ANGLE;
+        rAileronAngle = -AILERON_MAX_ANGLE;
+    } else if (keys.d && !keys.a) {
+        aileronAngle = AILERON_MAX_ANGLE;
+        rAileronAngle = AILERON_MAX_ANGLE;
+    } else {
+        aileronAngle = 0;
+        rAileronAngle = 0;
+    }
+
+    // Pitch
+    if (keys.w && !keys.s) {
+        elevatorAngle = -AILERON_MAX_ANGLE;
+    } else if (keys.s && !keys.w) {
+        elevatorAngle = AILERON_MAX_ANGLE;
+    } else {
+        elevatorAngle = 0;
+    }
+
+    // Yaw
+    if (keys.q && !keys.e) {
+        rudderAngle = -AILERON_MAX_ANGLE;
+    } else if (keys.e && !keys.q) {
+        rudderAngle = AILERON_MAX_ANGLE;
+    } else {
+        rudderAngle = 0;
+    }
 }
 
-// Event listeners
-document.getElementById('toggleRotation').addEventListener('click', () => {
-    autoRotate = !autoRotate;
-    const button = document.getElementById('toggleRotation');
-    button.textContent = autoRotate ? 'Stop Rotation' : 'Start Rotation';
-    
-    if (autoRotate) {
-        rotationStartTime = Date.now();
-    } else {
-        const elapsed = (Date.now() - rotationStartTime) * 0.001;
-        rotationOffset += elapsed * 0.5;
+document.addEventListener('keydown', (event) => {
+    const key = event.key.toLowerCase();
+    if (keys.hasOwnProperty(key)) {
+        keys[key] = true;
+        updateControlAngles();
     }
 });
 
-document.getElementById('resetView').addEventListener('click', resetView);
-
-// Keyboard controls
-document.addEventListener('keydown', (event) => {
-    const step = 5;
-    switch(event.key.toLowerCase()) {
-        // Roll (A/D)
-        case 'a': // Left Aileron Down, Right Aileron Up
-            aileronAngle = Math.max(aileronAngle - step, -AILERON_MAX_ANGLE);
-            rAileronAngle = Math.max(rAileronAngle - step, -AILERON_MAX_ANGLE);
-            console.log('Roll Left (A):', aileronAngle, rAileronAngle);
-            break;
-        case 'd': // Left Aileron Up, Right Aileron Down
-            aileronAngle = Math.min(aileronAngle + step, AILERON_MAX_ANGLE);
-            rAileronAngle = Math.min(rAileronAngle + step, AILERON_MAX_ANGLE);
-            console.log('Roll Right (D):', aileronAngle, rAileronAngle);
-            break;
-
-        // Pitch (W/S)
-        case 'w': // Pitch Down
-            elevatorAngle = Math.max(elevatorAngle - step, -AILERON_MAX_ANGLE);
-            console.log('Pitch Down (W):', elevatorAngle);
-            break;
-        case 's': // Pitch Up
-            elevatorAngle = Math.min(elevatorAngle + step, AILERON_MAX_ANGLE);
-            console.log('Pitch Up (S):', elevatorAngle);
-            break;
-
-        // Yaw (Q/E)
-        case 'q': // Yaw Left
-            rudderAngle = Math.max(rudderAngle - step, -AILERON_MAX_ANGLE);
-            console.log('Yaw Left (Q):', rudderAngle);
-            break;
-        case 'e': // Yaw Right
-            rudderAngle = Math.min(rudderAngle + step, AILERON_MAX_ANGLE);
-            console.log('Yaw Right (E):', rudderAngle);
-            break;
+document.addEventListener('keyup', (event) => {
+    const key = event.key.toLowerCase();
+    if (keys.hasOwnProperty(key)) {
+        keys[key] = false;
+        updateControlAngles();
     }
 });
 
