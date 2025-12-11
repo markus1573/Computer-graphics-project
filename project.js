@@ -92,11 +92,11 @@ let modelViewMatrix, projectionMatrix;
 let modelLoaded = false;
 
 // Animation state
-let aileronAngle = 0;
+let laileronAngle = 0;
 let rAileronAngle = 0;
 let elevatorAngle = 0;
 let rudderAngle = 0;
-const AILERON_MAX_ANGLE = 45;
+const CONTROLSURFACE_MAX_ANGLE = 45;
 
 
 
@@ -473,15 +473,15 @@ function updateMatrices() {
     if (ENABLE_MOVEMENT_AND_BACKGROUND) {
         // Update Physics
         // Roll Rate: degrees per second. Let's say max deflection gives 45 deg/s
-        const rollRate = -aileronAngle * dt; 
+        const rollRate = -laileronAngle * dt; 
         currentRoll += rollRate;
 
         // Pitch and Yaw Rates
         // These affect the world rotation
         // Pitch Rate: degrees per second
-        const pitchRate = -elevatorAngle * dt; // Elevator up (positive) -> Pitch up (negative rotation for world)
+        const pitchRate = -elevatorAngle * 0.5*dt; // Elevator up (positive) -> Pitch up (negative rotation for world)
         // Yaw Rate: degrees per second
-        const yawRate = rudderAngle * dt; // Rudder left (negative) -> Yaw left (positive rotation for world?)
+        const yawRate = rudderAngle * 0.5*dt; // Rudder left (negative) -> Yaw left (positive rotation for world?)
         // Let's check signs:
         // Rudder Left (Q) -> rudderAngle = -45.
         // We want plane to turn left. World turns right (CW).
@@ -545,7 +545,7 @@ function updateMatrices() {
     // --- LEFT AILERON ---
     const lAileronPivot = vec3(4.0313, -2.4272, -2.4330);
     const lAileronAxis = vec3(0.5075, 0.0511, -0.3055);
-    const lAileronMatrices = calculatePartMatrices(baseModelMatrix, viewMatrix, lAileronPivot, lAileronAxis, aileronAngle);
+    const lAileronMatrices = calculatePartMatrices(baseModelMatrix, viewMatrix, lAileronPivot, lAileronAxis, laileronAngle);
     let lAileronModelView = lAileronMatrices.modelView;
     let lAileronNormalMat = lAileronMatrices.normalMat;
 
@@ -941,30 +941,30 @@ const keys = {
 function updateControlAngles() {
     // Roll
     if (keys.a && !keys.d) {
-        aileronAngle = AILERON_MAX_ANGLE;
-        rAileronAngle = AILERON_MAX_ANGLE;
+        laileronAngle = CONTROLSURFACE_MAX_ANGLE;
+        rAileronAngle = CONTROLSURFACE_MAX_ANGLE;
     } else if (keys.d && !keys.a) {
-        aileronAngle = -AILERON_MAX_ANGLE;
-        rAileronAngle = -AILERON_MAX_ANGLE;
+        laileronAngle = -CONTROLSURFACE_MAX_ANGLE;
+        rAileronAngle = -CONTROLSURFACE_MAX_ANGLE;
     } else {
-        aileronAngle = 0;
+        laileronAngle = 0;
         rAileronAngle = 0;
     }
 
     // Pitch
     if (keys.w && !keys.s) {
-        elevatorAngle = -AILERON_MAX_ANGLE;
+        elevatorAngle = -CONTROLSURFACE_MAX_ANGLE;
     } else if (keys.s && !keys.w) {
-        elevatorAngle = AILERON_MAX_ANGLE;
+        elevatorAngle = CONTROLSURFACE_MAX_ANGLE;
     } else {
         elevatorAngle = 0;
     }
 
     // Yaw
     if (keys.q && !keys.e) {
-        rudderAngle = -AILERON_MAX_ANGLE;
+        rudderAngle = -CONTROLSURFACE_MAX_ANGLE;
     } else if (keys.e && !keys.q) {
-        rudderAngle = AILERON_MAX_ANGLE;
+        rudderAngle = CONTROLSURFACE_MAX_ANGLE;
     } else {
         rudderAngle = 0;
     }
