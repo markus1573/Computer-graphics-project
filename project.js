@@ -479,17 +479,10 @@ function updateMatrices() {
         // Pitch and Yaw Rates
         // These affect the world rotation
         // Pitch Rate: degrees per second
-        const pitchRate = -elevatorAngle * 0.5*dt; // Elevator up (positive) -> Pitch up (negative rotation for world)
+        const pitchRate = -elevatorAngle * 0.5*dt; 
         // Yaw Rate: degrees per second
-        const yawRate = rudderAngle * 0.5*dt; // Rudder left (negative) -> Yaw left (positive rotation for world?)
-        // Let's check signs:
-        // Rudder Left (Q) -> rudderAngle = -45.
-        // We want plane to turn left. World turns right (CW).
-        // rotate(angle, Y). Positive angle is CCW. Negative is CW.
-        // So rudderAngle negative -> world rotation negative?
-        // Previous code: rotY = rotate(rudderAngle, ...).
-        // So if rudderAngle is -45, rotY is rotate(-45).
-        // So yawRate should be proportional to rudderAngle.
+        const yawRate = rudderAngle * 0.5*dt;
+
 
         if (Math.abs(pitchRate) > 0.001 || Math.abs(yawRate) > 0.001) {
             // Calculate axes based on currentRoll
@@ -504,18 +497,12 @@ function updateMatrices() {
             let deltaYaw = rotate(yawRate, yawAxis);
 
             // Apply to accumulated rotation
-            // Order: Yaw then Pitch? Or combined? Small angles, order matters less.
             let deltaRot = mult(deltaPitch, deltaYaw);
             accumulatedWorldRotation = mult(deltaRot, accumulatedWorldRotation);
         }
     }
 
     // 1. Camera & Global Rotation
-    // Fixed camera relative to plane
-    eye = vec3(0, 5, -20);
-    at = vec3(0, 0, 0);
-    up = vec3(0, 1, 0);
-
     const viewMatrix = lookAt(eye, at, up);
     
     const canvas = document.getElementById('canvas');
@@ -559,7 +546,7 @@ function updateMatrices() {
     // --- LEFT ELEVATOR ---
     const lElevatorPivot = vec3(2.1539, -2.2897, -4.6862);
     const lElevatorAxis = vec3(0.7007, 0.1209, -0.2267);
-    const lElevatorMatrices = calculatePartMatrices(baseModelMatrix, viewMatrix, lElevatorPivot, lElevatorAxis, elevatorAngle);
+    const lElevatorMatrices = calculatePartMatrices(baseModelMatrix, viewMatrix, lElevatorPivot, lElevatorAxis, -elevatorAngle);
     let lElevatorModelView = lElevatorMatrices.modelView;
     let lElevatorNormalMat = lElevatorMatrices.normalMat;
 
@@ -567,7 +554,7 @@ function updateMatrices() {
     const rElevatorPivot = vec3(1.7560, -2.2713, -4.6876);
     const rElevatorAxis = vec3(-0.7060, 0.0917, -0.2239);
     // Note: Inverted angle for right elevator
-    const rElevatorMatrices = calculatePartMatrices(baseModelMatrix, viewMatrix, rElevatorPivot, rElevatorAxis, -elevatorAngle);
+    const rElevatorMatrices = calculatePartMatrices(baseModelMatrix, viewMatrix, rElevatorPivot, rElevatorAxis, elevatorAngle);
     let rElevatorModelView = rElevatorMatrices.modelView;
     let rElevatorNormalMat = rElevatorMatrices.normalMat;
 
