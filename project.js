@@ -513,12 +513,9 @@ function updateMatrices() {
     // Center the fuselage at (0,0,0)
     // Fuselage Center approx: X=1.95, Y=-2.42, Z=-1.3
     // Scale: 2.0
-    // Tx = -1.95 * 2 = -3.9
-    // Ty = -(-2.42) * 2 = 4.84
-    // Tz = -(-1.3) * 2 = 2.6
-    const baseTrans = translate(-3.9, 4.84, 2.6);
+    const baseTrans = translate(-1.95, 2.42, 1.3);
     const baseScale = scalem(2.0, 2.0, 2.0);
-    let baseModelMatrix = mult(baseTrans, baseScale);
+    let baseModelMatrix = mult(baseScale, baseTrans);
     
     // Apply Roll to the plane (Rotate around Z axis)
     // Positive angle for Counter-Clockwise rotation (Roll Left) when looking down +Z
@@ -546,6 +543,7 @@ function updateMatrices() {
     // --- LEFT ELEVATOR ---
     const lElevatorPivot = vec3(2.1539, -2.2897, -4.6862);
     const lElevatorAxis = vec3(0.7007, 0.1209, -0.2267);
+        // Note: Inverted angle for left elevator
     const lElevatorMatrices = calculatePartMatrices(baseModelMatrix, viewMatrix, lElevatorPivot, lElevatorAxis, -elevatorAngle);
     let lElevatorModelView = lElevatorMatrices.modelView;
     let lElevatorNormalMat = lElevatorMatrices.normalMat;
@@ -553,7 +551,6 @@ function updateMatrices() {
     // --- RIGHT ELEVATOR ---
     const rElevatorPivot = vec3(1.7560, -2.2713, -4.6876);
     const rElevatorAxis = vec3(-0.7060, 0.0917, -0.2239);
-    // Note: Inverted angle for right elevator
     const rElevatorMatrices = calculatePartMatrices(baseModelMatrix, viewMatrix, rElevatorPivot, rElevatorAxis, elevatorAngle);
     let rElevatorModelView = rElevatorMatrices.modelView;
     let rElevatorNormalMat = rElevatorMatrices.normalMat;
