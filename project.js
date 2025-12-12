@@ -1,3 +1,8 @@
+// COMMENT ON THE USE OF AI
+//
+// This code was written with the assistance of Gemini pro 3.
+//
+
 // WebGPU Boeing 747 Model Viewer
 // Uses OBJParser.js and MV.js for model loading and matrix operations
 
